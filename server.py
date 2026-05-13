@@ -251,17 +251,29 @@ async def auth_start(request: Request):
 
 
 async def auth_callback(request: Request):
+    error = request.query_params.get("error")
+    if error:
+        desc = request.query_params.get("error_description", "")
+        return HTMLResponse(f"<h1>OAuth Error: {error}</h1><p>{desc}</p>", status_code=400)
+
     code = request.query_params.get("code")
     if not code:
         return HTMLResponse("<h1>Error: missing code</h1>", status_code=400)
-    flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=_redirect_uri(request))
-    flow.fetch_token(code=code)
-    token_json = flow.credentials.to_json()
+
+    try:
+        # Allow granted scopes to differ from requested (user may skip Drive)
+        os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+        flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=_redirect_uri(request))
+        flow.fetch_token(code=code)
+        token_json = flow.credentials.to_json()
+    except Exception as exc:
+        return HTMLResponse(f"<h1>Token exchange failed</h1><pre>{exc}</pre>", status_code=500)
+
     return HTMLResponse(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Authorized</title>
 <style>body{{font-family:monospace;padding:2rem}}pre{{background:#f4f4f4;padding:1rem;word-break:break-all;white-space:pre-wrap}}</style>
 </head><body>
-<h2>✅ Authorization successful</h2>
+<h2>&#x2705; Authorization successful</h2>
 <p>Copy the value below and set it as Railway environment variable <code>GOOGLE_TOKEN_JSON</code>:</p>
 <pre id="tok">{token_json}</pre>
 <button onclick="navigator.clipboard.writeText(document.getElementById('tok').textContent)">Copy</button>
