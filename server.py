@@ -240,7 +240,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 # ── OAuth routes ───────────────────────────────────────────────────────────
 
 def _redirect_uri(request: Request) -> str:
-    base = os.getenv("BASE_URL", str(request.base_url).rstrip("/"))
+    # BASE_URL must be set explicitly to avoid http/https mismatch behind Railway proxy
+    base = os.environ["BASE_URL"].rstrip("/")
     return f"{base}/auth/callback"
 
 
