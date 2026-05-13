@@ -1,7 +1,13 @@
 import os
 import json
 import asyncio
+import hashlib
+import secrets
+import base64
 from typing import Any
+
+# Temporary store for PKCE code verifiers keyed by OAuth state
+_pkce_store: dict[str, str] = {}
 
 import uvicorn
 from starlette.applications import Starlette
@@ -246,8 +252,18 @@ def _redirect_uri(request: Request) -> str:
 
 
 async def auth_start(request: Request):
+    code_verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(code_verifier.encode()).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
     flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=_redirect_uri(request))
-    url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+    url, state = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+        code_challenge=code_challenge,
+        code_challenge_method="S256",
+    )
+    _pkce_store[state] = code_verifier
     return RedirectResponse(url)
 
 
@@ -262,10 +278,11 @@ async def auth_callback(request: Request):
         return HTMLResponse("<h1>Error: missing code</h1>", status_code=400)
 
     try:
-        # Allow granted scopes to differ from requested (user may skip Drive)
         os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+        state = request.query_params.get("state", "")
+        code_verifier = _pkce_store.pop(state, None)
         flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=_redirect_uri(request))
-        flow.fetch_token(code=code)
+        flow.fetch_token(code=code, code_verifier=code_verifier)
         token_json = flow.credentials.to_json()
     except Exception as exc:
         return HTMLResponse(f"<h1>Token exchange failed</h1><pre>{exc}</pre>", status_code=500)
