@@ -4,8 +4,9 @@ import asyncio
 import hashlib
 import secrets
 import base64
-import contextlib
 from typing import Any
+
+import anyio
 
 # Temporary store for PKCE code verifiers keyed by OAuth state
 _pkce_store: dict[str, str] = {}
@@ -17,7 +18,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, HTMLResponse
 
 from mcp.server import Server
-from mcp.server.streamable_http import StreamableHTTPSessionManager
+from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp import types
 
 from google.oauth2.credentials import Credentials
@@ -306,28 +307,23 @@ async def health(request: Request):
 
 # ── Streamable HTTP transport + app assembly ────────────────────────────────
 
-session_manager = StreamableHTTPSessionManager(
-    app=mcp,
-    event_store=None,
-    json_response=False,
-    stateless=True,
-)
-
-
 async def handle_mcp(request: Request):
-    await session_manager.handle_request(
-        request.scope, request.receive, request._send
+    transport = StreamableHTTPServerTransport(
+        mcp_session_id=None,
+        is_json_response_enabled=False,
     )
 
+    async def run_mcp():
+        async with transport.connect() as (read_stream, write_stream):
+            await mcp.run(read_stream, write_stream, mcp.create_initialization_options())
 
-@contextlib.asynccontextmanager
-async def lifespan(app):
-    async with session_manager.run():
-        yield
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(run_mcp)
+        await transport.handle_request(request.scope, request.receive, request._send)
+        tg.cancel_scope.cancel()
 
 
 app = Starlette(
-    lifespan=lifespan,
     routes=[
         Route("/",              health),
         Route("/auth/start",    auth_start),
