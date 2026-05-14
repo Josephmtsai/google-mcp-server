@@ -6,19 +6,17 @@ import secrets
 import base64
 from typing import Any
 
-import anyio
-
 # Temporary store for PKCE code verifiers keyed by OAuth state
 _pkce_store: dict[str, str] = {}
 
 import uvicorn
 from starlette.applications import Starlette
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, HTMLResponse
+from starlette.middleware.cors import CORSMiddleware
 
 from mcp.server import Server
-from mcp.server.streamable_http import StreamableHTTPServerTransport
 from mcp import types
 
 from google.oauth2.credentials import Credentials
@@ -305,31 +303,23 @@ async def health(request: Request):
     return HTMLResponse(f"google-workspace-mcp | authenticated={authed}")
 
 
-# ── Streamable HTTP transport + app assembly ────────────────────────────────
+# ── App assembly ────────────────────────────────────────────────────────────
 
-async def handle_mcp(request: Request):
-    transport = StreamableHTTPServerTransport(
-        mcp_session_id=None,
-        is_json_response_enabled=False,
-    )
+mcp_asgi = mcp.streamable_http_app(stateless_http=True, json_response=False)
 
-    async def run_mcp():
-        async with transport.connect() as (read_stream, write_stream):
-            await mcp.run(read_stream, write_stream, mcp.create_initialization_options())
-
-    async with anyio.create_task_group() as tg:
-        tg.start_soon(run_mcp)
-        await transport.handle_request(request.scope, request.receive, request._send)
-        tg.cancel_scope.cancel()
-
-
-app = Starlette(
-    routes=[
-        Route("/",              health),
-        Route("/auth/start",    auth_start),
-        Route("/auth/callback", auth_callback),
-        Route("/mcp",           handle_mcp, methods=["GET", "POST", "DELETE"]),
-    ]
+app = CORSMiddleware(
+    Starlette(
+        routes=[
+            Route("/",              health),
+            Route("/auth/start",    auth_start),
+            Route("/auth/callback", auth_callback),
+            Mount("/mcp",           app=mcp_asgi),
+        ]
+    ),
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["*"],
+    expose_headers=["Mcp-Session-Id"],
 )
 
 if __name__ == "__main__":
