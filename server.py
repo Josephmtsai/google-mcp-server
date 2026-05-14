@@ -12,13 +12,13 @@ _pkce_store: dict[str, str] = {}
 
 import uvicorn
 from starlette.applications import Starlette
-from starlette.routing import Mount, Route
+from starlette.routing import Route
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, HTMLResponse
 from starlette.middleware.cors import CORSMiddleware
 
 from mcp.server import Server
-from mcp.server.streamable_http_manager import StreamableHTTPSessionManager, StreamableHTTPASGIApp
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp import types
 
 from google.oauth2.credentials import Credentials
@@ -321,6 +321,10 @@ async def lifespan(starlette_app):
         yield
 
 
+async def handle_mcp(request: Request):
+    await session_manager.handle_request(request.scope, request.receive, request._send)
+
+
 app = CORSMiddleware(
     Starlette(
         lifespan=lifespan,
@@ -328,7 +332,7 @@ app = CORSMiddleware(
             Route("/",              health),
             Route("/auth/start",    auth_start),
             Route("/auth/callback", auth_callback),
-            Mount("/mcp",           app=StreamableHTTPASGIApp(session_manager)),
+            Route("/mcp",           handle_mcp, methods=["GET", "POST", "DELETE"]),
         ]
     ),
     allow_origins=["*"],
