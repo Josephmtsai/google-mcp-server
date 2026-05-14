@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import secrets
 import base64
+import contextlib
 from typing import Any
 
 # Temporary store for PKCE code verifiers keyed by OAuth state
@@ -11,12 +12,12 @@ _pkce_store: dict[str, str] = {}
 
 import uvicorn
 from starlette.applications import Starlette
-from starlette.routing import Mount, Route
+from starlette.routing import Route
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, HTMLResponse
 
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http import StreamableHTTPSessionManager
 from mcp import types
 
 from google.oauth2.credentials import Credentials
@@ -303,25 +304,35 @@ async def health(request: Request):
     return HTMLResponse(f"google-workspace-mcp | authenticated={authed}")
 
 
-# ── SSE transport + app assembly ────────────────────────────────────────────
+# ── Streamable HTTP transport + app assembly ────────────────────────────────
 
-sse_transport = SseServerTransport("/messages/")
+session_manager = StreamableHTTPSessionManager(
+    app=mcp,
+    event_store=None,
+    json_response=False,
+    stateless=True,
+)
 
 
-async def handle_sse(request: Request):
-    async with sse_transport.connect_sse(
+async def handle_mcp(request: Request):
+    await session_manager.handle_request(
         request.scope, request.receive, request._send
-    ) as streams:
-        await mcp.run(streams[0], streams[1], mcp.create_initialization_options())
+    )
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app):
+    async with session_manager.run():
+        yield
 
 
 app = Starlette(
+    lifespan=lifespan,
     routes=[
         Route("/",              health),
         Route("/auth/start",    auth_start),
         Route("/auth/callback", auth_callback),
-        Route("/sse",           handle_sse),
-        Mount("/messages/",     app=sse_transport.handle_post_message),
+        Route("/mcp",           handle_mcp, methods=["GET", "POST", "DELETE"]),
     ]
 )
 
