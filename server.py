@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import secrets
 import base64
+import contextlib
 from typing import Any
 
 # Temporary store for PKCE code verifiers keyed by OAuth state
@@ -17,6 +18,7 @@ from starlette.responses import RedirectResponse, HTMLResponse
 from starlette.middleware.cors import CORSMiddleware
 
 from mcp.server import Server
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager, StreamableHTTPASGIApp
 from mcp import types
 
 from google.oauth2.credentials import Credentials
@@ -303,17 +305,30 @@ async def health(request: Request):
     return HTMLResponse(f"google-workspace-mcp | authenticated={authed}")
 
 
-# ── App assembly ────────────────────────────────────────────────────────────
+# ── Streamable HTTP transport + app assembly ────────────────────────────────
 
-mcp_asgi = mcp.streamable_http_app(stateless_http=True, json_response=False)
+session_manager = StreamableHTTPSessionManager(
+    app=mcp,
+    event_store=None,
+    json_response=False,
+    stateless=True,
+)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(starlette_app):
+    async with session_manager.run():
+        yield
+
 
 app = CORSMiddleware(
     Starlette(
+        lifespan=lifespan,
         routes=[
             Route("/",              health),
             Route("/auth/start",    auth_start),
             Route("/auth/callback", auth_callback),
-            Mount("/mcp",           app=mcp_asgi),
+            Mount("/mcp",           app=StreamableHTTPASGIApp(session_manager)),
         ]
     ),
     allow_origins=["*"],
